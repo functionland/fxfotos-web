@@ -1,101 +1,284 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import React, { useState, useEffect } from 'react';
+import { createWeb3Modal, defaultWagmiConfig } from '@web3modal/wagmi/react';
+import { Config, WagmiProvider, useAccount, useSignMessage, useConnect } from 'wagmi';
+import { metaMask } from '@wagmi/connectors';
+import { arbitrum, mainnet } from 'viem/chains';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { HDKEY } from '@functionland/fula-sec-web';
+import { MemoryBlockStore, Rng, PrivateDirectory, PrivateForest } from '../utils/wnfs';
+import { Chain, http } from 'viem'
+
+const projectId = '94a4ca39db88ee0be8f6df95fdfb560a';
+
+const metadata = {
+  name: 'FxBlox',
+  description: 'Application to set up FxBlox, designed to run as a Decentralized Physical Infrastructure node (DePIN)',
+  url: 'https://web3modal.com',
+  icons: ['https://imagedelivery.net/_aTEfDRm7z3tKgu9JhfeKA/1f36e0e1-df9a-4bdc-799b-8631ab1eb000/sm']
+};
+
+const chains = [mainnet, arbitrum];
+const metaMaskConnector = metaMask({ chains });
+
+const wagmiConfig = defaultWagmiConfig({
+  chains: chains as unknown as readonly [Chain, ...Chain[]],
+  projectId,
+  metadata,
+  connectors: [metaMaskConnector],
+  transports: {
+    [mainnet.id]: http(),
+    [arbitrum.id]: http(),
+  },
+});
+
+const modal = createWeb3Modal({ 
+  wagmiConfig: wagmiConfig as unknown as Config, 
+  projectId,
+  enableAnalytics: true,
+  enableOnramp: true
+});
+
+const queryClient = new QueryClient();
+
+function Home() {
+  const [password, setPassword] = useState('');
+  const [iKnow, setIKnow] = useState(false);
+  const [metamaskOpen, setMetamaskOpen] = useState(false);
+  const [rootCid, setRootCid] = useState('');
+  const [output, setOutput] = useState('');
+  const [error, setError] = useState('');
+  const [forest, setForest] = useState<PrivateForest | null>(null);
+  const [rootDir, setRootDir] = useState<PrivateDirectory | null>(null);
+  const [linking, setLinking] = useState(false);
+
+  const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
+  const { connect } = useConnect();
+
+  const store = new MemoryBlockStore();
+  const rng = new Rng();
+  
+  useEffect(() => {
+    const unsubscribe = modal.subscribeEvents(event => {
+      console.log(event.data.event);
+      const state = event?.data?.event;
+      if (state === "CONNECT_SUCCESS") {
+        console.log('connected to wallet');
+        console.log('logged in with address: ' + address);
+        if (address) {
+          handleLinkPassword();
+        }
+      }
+    });
+  
+    // Cleanup function to unsubscribe when component unmounts
+    return () => {
+      unsubscribe();
+    };
+  }, []); // This effect should also only run once on component mount
+  
+  // Separate effect to handle address changes if needed
+  useEffect(() => {
+    if (address) {
+      console.log('Address changed:', address);
+      
+    }
+  }, [address]);
+
+  const initForest = async () => {
+    const initialForest = new PrivateForest(rng);
+    setForest(initialForest);
+    return initialForest
+  };
+
+  const handleLinkPassword = async () => {
+    console.log('handleLinkPassword');
+    try {
+      if (linking) {
+        setLinking(false);
+        return;
+      }
+      setLinking(true);
+      const ed = new HDKEY(password);
+      const chainCode = ed.chainCode;
+      const msg = `Sign this message to link your wallet with the chain code: ${chainCode}`;
+
+      const signature = await signMessageAsync({ message: msg });
+
+      if (!signature) {
+        throw new Error('Sign failed');
+      }
+      console.log('Signature:', signature);
+      setOutput(`Linked successfully. Signature: ${signature}`);
+
+      let local_forest = forest;
+      if (!local_forest) {
+        console.log('initializing local forest');
+        local_forest = await initForest();
+      }
+      
+      // Initialize WNFS root directory
+      if (local_forest) {
+        const root = new PrivateDirectory(local_forest.emptyName(), new Date(), rng);
+        const { rootDir: newRootDir, forest: newForest, cid } = await root.mkdir(
+          ["pictures"],
+          true,
+          new Date(),
+          local_forest,
+          store,
+          rng
+        );
+        setRootDir(newRootDir);
+        setForest(newForest);
+        console.log('root cid is: '+cid)
+      }
+
+      saveCredentials(password, signature);
+      localStorage.setItem('wallet_set', 'true');
+    } catch (err) {
+      console.error('Error:', err);
+      setError('Unable to sign the message! Make sure your wallet is connected and you have an account selected.');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const loadPrivateDirectory = async () => {
+    if (!rootCid || !forest || !rootDir) return;
+
+    try {
+      const loadedDir = await PrivateDirectory.load(forest, rootCid, store);
+      setRootDir(loadedDir);
+
+      const { result } = await loadedDir.ls([], true, forest, store);
+      setOutput(JSON.stringify(result, null, 2));
+    } catch (err) {
+      console.error('Error loading private directory:', err);
+      setError('Failed to load private directory');
+    }
+  };
+
+  const saveCredentials = (password: string, signatureData: string) => {
+    const credentials = { password, signatureData };
+    localStorage.setItem('credentials', JSON.stringify(credentials));
+  };
+
+  const getCredentials = () => {
+    const credentials = localStorage.getItem('credentials');
+    return credentials ? JSON.parse(credentials) : null;
+  };
+
+  const handleSignMetamask = async () => {
+    if (!password || !iKnow || !metamaskOpen) {
+      alert('Please complete all required fields and checkboxes.');
+      return;
+    }
+    
+    try {
+      console.log('connect');
+      modal.close();
+      modal.open({ view: 'Connect' }).then((res) => {
+        console.log('res received');
+        console.log(res);
+      });
+    } catch (error) {
+      console.error('Connection error:', error);
+      alert('Failed to connect wallet. Please try again.');
+    }
+  };
+
+  const handleSignManually = () => {
+    if (!password || !iKnow) {
+      alert('Please complete all required fields and checkboxes.');
+      return;
+    }
+    const sig = prompt('Enter your signature:');
+    if (sig) {
+      saveCredentials(password, sig);
+      localStorage.setItem('wallet_set', 'true');
+      window.location.href = '/webui/set-blox-authorizer';
+    }
+  };
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
+    <div className="container mx-auto px-4 py-8">
+      <h1 className="text-3xl font-bold mb-8">FxFotos Web</h1>
+      
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="Enter password"
+        className="w-full p-2 mb-4 border rounded"
+      />
+      <div className="mb-4">
+        <input
+          type="checkbox"
+          checked={iKnow}
+          onChange={(e) => setIKnow(e.target.checked)}
+          id="i-know-checkbox"
         />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+        <label htmlFor="i-know-checkbox" className="ml-2">I know the risks</label>
+      </div>
+      <div className="mb-4">
+        <input
+          type="checkbox"
+          checked={metamaskOpen}
+          onChange={(e) => setMetamaskOpen(e.target.checked)}
+          id="metamask-open-checkbox"
+        />
+        <label htmlFor="metamask-open-checkbox" className="ml-2">MetaMask is open</label>
+      </div>
+      <button
+        onClick={handleSignMetamask}
+        disabled={!password || !iKnow || !metamaskOpen}
+        className="bg-blue-500 text-white p-2 rounded mr-2 disabled:opacity-50"
+      >
+        Sign with MetaMask
+      </button>
+      <button
+        onClick={handleSignManually}
+        disabled={!password || !iKnow}
+        className="bg-green-500 text-white p-2 rounded mr-2 disabled:opacity-50"
+      >
+        Sign Manually
+      </button>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      <input 
+        type="text" 
+        value={rootCid} 
+        onChange={(e) => setRootCid(e.target.value)} 
+        placeholder="Enter root CID"
+        className="w-full p-2 mb-4 border rounded mt-4"
+      />
+      <button 
+        onClick={loadPrivateDirectory}
+        className="bg-yellow-500 text-white p-2 rounded mb-4"
+      >
+        Load Files
+      </button>
+
+      {error && <p className="text-red-500">{error}</p>}
+
+      {output && (
+        <pre className="bg-gray-100 p-4 rounded mt-4 overflow-auto">
+          {output}
+        </pre>
+      )}
     </div>
   );
 }
+
+function App() {
+  return (
+    <WagmiProvider config={wagmiConfig}>
+      <QueryClientProvider client={queryClient}>
+        <Home />
+      </QueryClientProvider>
+    </WagmiProvider>
+  );
+}
+
+export default App;
