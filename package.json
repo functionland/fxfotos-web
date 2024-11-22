@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@functionland/fula-sec-web": "^2.0.0",
+    "@functionland/fula-sec-web": "^2.0.3",
     "@helia/dag-cbor": "^4.0.0",
     "@helia/dag-json": "^4.0.0",
     "@helia/ipns": "^8.0.0",
@@ -32,7 +32,7 @@
     "viem": "^2.18.2",
     "wagmi": "^2.12.1",
     "web3": "^4.11.0",
-    "wnfs": "^0.2.2",
+    "wnfs": "0.1.27",
     "zustand": "^5.0.1"
   },
   "devDependencies": {

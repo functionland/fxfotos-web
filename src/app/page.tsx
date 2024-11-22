@@ -7,9 +7,13 @@ import { metaMask } from '@wagmi/connectors';
 import { arbitrum, mainnet } from 'viem/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HDKEY } from '@functionland/fula-sec-web';
-import { Rng, PrivateDirectory, PrivateForest, PrivateNode, AccessKey } from '../utils/wnfs';
-import { MemoryBlockStore } from '../utils/blockstore';
+import { initWNFS, reloadWNFS, PrivateForest, PrivateDirectory } from '../utils/wnfs';
+import { IPFSBlockStore } from '../utils/blockstore';
 import { Chain, http } from 'viem'
+import { CID } from 'multiformats';
+import { sha256 } from 'multiformats/hashes/sha2';
+import * as json from 'multiformats/codecs/json';
+import { toString } from "uint8arrays";
 
 const projectId = '94a4ca39db88ee0be8f6df95fdfb560a';
 
@@ -53,13 +57,13 @@ function Home() {
   const [forest, setForest] = useState<PrivateForest | null>(null);
   const [rootDir, setRootDir] = useState<PrivateDirectory | null>(null);
   const [linking, setLinking] = useState(false);
+  const [key, setKey] = useState('');
 
   const { address } = useAccount();
   const { signMessageAsync } = useSignMessage();
   const { connect } = useConnect();
 
-  const store = new MemoryBlockStore();
-  const rng = new Rng();
+  const store = new IPFSBlockStore();
   
   useEffect(() => {
     const unsubscribe = modal.subscribeEvents(event => {
@@ -88,27 +92,22 @@ function Home() {
     }
   }, [address]);
 
-  const initForest = async () => {
-    const initialForest = new PrivateForest(rng);
-    setForest(initialForest);
-    return initialForest
-  };
-
-  const handleLinkPassword = async (manual:boolean=false) => {
-    console.log('handleLinkPassword');
+  const handleLinkPassword = async (manual: boolean = false) => {
+    console.log("handleLinkPassword");
     try {
-      let signature:string = "";
+      let signature: string = "";
+  
       if (manual) {
         if (!password || !iKnow) {
-          alert('Please complete all required fields and checkboxes.');
+          alert("Please complete all required fields and checkboxes.");
           return;
         }
-        const sig = prompt('Enter your signature:');
+        const sig = prompt("Enter your signature:");
         if (sig) {
           saveCredentials(password, sig);
           signature = sig;
-          console.log('signature is:'+signature);
-          localStorage.setItem('wallet_set', 'true');
+          console.log("signature is:" + signature);
+          localStorage.setItem("wallet_set", "true");
           setOutput(`Linked successfully. Signature: ${signature}`);
         }
       } else {
@@ -120,115 +119,51 @@ function Home() {
         const ed = new HDKEY(password);
         const chainCode = ed.chainCode;
         const msg = `Sign this message to link your wallet with the chain code: ${chainCode}`;
-
+  
         signature = await signMessageAsync({ message: msg });
-
+  
         if (!signature) {
-          throw new Error('Sign failed');
+          throw new Error("Sign failed");
         }
-        console.log('Signature:', signature);
+        console.log("Signature:", signature);
         setOutput(`Linked successfully. Signature: ${signature}`);
       }
-
-      let local_forest = forest;
-    if (!local_forest) {
-      console.log('initializing local forest');
-      // Initialize forest with random number generator
-      const rng = new Rng();
-      local_forest = new PrivateForest(rng);
-    }
-
-    if (local_forest) {
       try {
-        // Create root directory with empty name from forest
-        // Create root directory with empty name from forest
-        const root = new PrivateDirectory(local_forest.emptyName(), new Date(), rng);
-
-        // Create directory structure
-        let { rootDir, forest: updatedForest } = await root.mkdir(
-          ["pictures", "cats"],
-          true,
-          new Date(),
-          local_forest,
-          store,
-          rng
-        );
-
-        // Write file to directory
-        ({ rootDir, forest: updatedForest } = await rootDir.write(
-          ["pictures", "cats", "tabby.png"],
-          true,
-          new Uint8Array([1, 2, 3, 4, 5]),
-          new Date(),
-          updatedForest,
-          store,
-          rng,
-        ));
-        // Store root directory to get access key and new forest state
-        const [accessKey, newForest] = await rootDir.asNode().store(updatedForest, store, rng);
-
-        // Store the access key bytes and CID bytes
-        const accessKeyBytes = await accessKey.toBytes();
-        const cidBytes = accessKey.getContentCid();
+        const { forest: forest1, cid: cid1, rootDir: rootDir1 } = await initWNFS(store, signature);
+      
+        // Convert CID Uint8Array to string for storage
+        const cidString = CID.decode(cid1).toString();
     
-        // Store them as base64 strings to preserve binary data
-        const cid = btoa(String.fromCharCode(...cidBytes));
-        localStorage.setItem('access_key_bytes', btoa(String.fromCharCode(...accessKeyBytes)));
-        localStorage.setItem('root_cid', cid);
-        
-        setRootDir(rootDir);
-        setForest(newForest);
-        setRootCid(cid);
-
-        // Store credentials
-        localStorage.setItem('wnfs_seed', signature);
-        saveCredentials(password, signature);
-        localStorage.setItem('wallet_set', 'true');
-        await  store.show();
+        setRootDir(rootDir1);
+        setForest(forest1);
+        setRootCid(cidString);
+        setKey(signature);
+        console.log({cidString: cidString, cid1: cid1});
       } catch (err) {
-        console.error('Error:', err);
-        setError('Unable to create private directory.');
+        console.error("Error:", err);
+        setError("Unable to create private directory3.");
       }
+    } catch (err) {
+      console.error("Error:", err);
+      setError("Unable to create private directory2.");
     }
-  } catch (err) {
-    console.error('Error:', err);
-    setError('Unable to sign message');
-  }
-};
-
-const loadPrivateDirectory = async () => {
-  if (!forest || !store) return;
+  };
   
-  try {
-    // Get stored binary data
-    const accessKeyStr = localStorage.getItem('access_key_bytes');
-    if (!accessKeyStr) {
-      throw new Error('No access key found');
+  const loadPrivateDirectory = async (
+  ): Promise<any> => {
+    try {
+      // Convert stored CID string back to Uint8Array
+      const cidBytes = CID.parse(rootCid).bytes;
+      console.log({cidBytes: cidBytes, rootCid: rootCid});
+      
+      
+      const rootDir = await reloadWNFS(store, cidBytes, key);
+      return rootDir;
+    } catch (error) {
+      console.error('Failed to load private directory:', error);
+      throw error;
     }
-    
-    // Convert base64 string back to Uint8Array
-    const accessKeyBytes = new Uint8Array(
-      atob(accessKeyStr).split('').map(c => c.charCodeAt(0))
-    );
-    
-    // Create access key from bytes
-    const accessKey = AccessKey.fromBytes(accessKeyBytes);
-    await  store.show();
-    
-    // Load the node using the access key
-    const loadedNode = await PrivateNode.load(accessKey, forest, store);
-    const latestNode = await loadedNode.searchLatest(forest, store);
-    const rootDir = latestNode.asDir();
-
-    setRootDir(rootDir);
-
-    const { result } = await rootDir.ls([], true, forest, store);
-    setOutput(JSON.stringify(result, null, 2));
-  } catch (err) {
-    console.error('Error loading private directory:', err);
-    setError('Failed to load private directory');
-  }
-};
+  };
 
   const saveCredentials = (password: string, signatureData: string) => {
     const credentials = { password, signatureData };
